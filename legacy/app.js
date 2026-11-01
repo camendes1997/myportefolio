@@ -89,6 +89,63 @@ async function updateCrypto(force=false){
  finally{cryptoBusy=false}
 }
 
+
+if(!state.marketMappings||typeof state.marketMappings!=='object')state.marketMappings={};
+if(state.autoMarketQuotes===undefined)state.autoMarketQuotes=false;
+if(!state.marketQuotes||typeof state.marketQuotes!=='object')state.marketQuotes={};
+let marketBusy=false;const pendingMarket=new Map();
+window.addEventListener('message',event=>{
+ if(event.origin!==location.origin||event.source!==parent||event.data?.type!=='MYPORT_MARKET_RESPONSE'||event.data.uid!==userId)return;
+ const p=pendingMarket.get(event.data.requestId);if(!p)return;
+ pendingMarket.delete(event.data.requestId);clearTimeout(p.timer);
+ event.data.error?p.reject(Error(event.data.error)):p.resolve(event.data.data);
+});
+function fetchMarketQuotes(assets){
+ return new Promise((resolve,reject)=>{
+  const id=uid();const timer=setTimeout(()=>{pendingMarket.delete(id);reject(Error('Tempo de resposta excedido'))},40000);
+  pendingMarket.set(id,{resolve,reject,timer});
+  parent.postMessage({type:'MYPORT_MARKET_REQUEST',uid:userId,requestId:id,assets},location.origin);
+ });
+}
+function marketPanel(cat){
+ const assets=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].sort();
+ const configured=assets.filter(t=>state.marketMappings[cat+'|'+t]?.symbol);
+ const meta=state.marketQuotes?.stocks||{};
+ const rows=assets.map(t=>{const m=state.marketMappings[cat+'|'+t]||{};
+  return '<tr><td>'+esc(t)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>'});
+ return '<section class="panel"><h3>Cotações de '+esc(cat)+'</h3><div class="actions"><button type="button" id="market-refresh">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="market-auto" style="width:auto" '+(state.autoMarketQuotes?'checked':'')+'> Atualização diária</label></div>'+
+ '<div class="muted-note">Fonte: Twelve Data através do Supabase · '+configured.length+'/'+assets.length+' símbolos configurados. Última consulta: '+esc(meta.at?new Date(meta.at).toLocaleString('pt-PT'):'nunca')+'. Confirma a bolsa de cada ativo antes de atualizar. Necessita da Edge Function e da chave de fornecedor no Supabase; a aplicação não expõe a chave.</div>'+
+ '<p id="market-status" class="muted-note" aria-live="polite"></p>'+table(['Ativo','Símbolo do fornecedor','Bolsa','Ação'],rows)+'</section>';
+}
+async function updateMarketQuotes(cat,force=false){
+ if(marketBusy||!['ETF','Ações'].includes(cat)||(!force&&!state.autoMarketQuotes))return;
+ const day=new Date().toISOString().slice(0,10);
+ const mappings=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].map(t=>{
+   const m=state.marketMappings[cat+'|'+t];return m?.symbol?{ticker:t,symbol:m.symbol,exchange:m.exchange||undefined,category:cat}:null;
+ }).filter(Boolean);
+ if(!mappings.length){const el=document.getElementById('market-status');if(el)el.textContent='Configura primeiro os símbolos dos ativos.';return}
+ if(!force&&state.marketQuotes.stocks?.checkedOn===day&&state.marketQuotes.stocks?.category===cat)return;
+ if(mappings.length>24){const el=document.getElementById('market-status');if(el)el.textContent='Há mais de 24 ativos. Atualiza apenas depois de reduzir a seleção para evitar consumo excessivo de créditos.';return}
+ marketBusy=true;
+ const el=document.getElementById('market-status');if(el)el.textContent='A consultar cotações…';
+ try{
+  const results=[];for(let i=0;i<mappings.length;i+=8){
+   const out=await fetchMarketQuotes(mappings.slice(i,i+8));
+   if(!Array.isArray(out?.results))throw Error('Resposta inválida da função de cotações');
+   results.push(...out.results);
+  }
+  const success=results.filter(x=>Number.isFinite(Number(x.eurPrice))&&Number(x.eurPrice)>0),errors=results.filter(x=>x.error);
+  for(const x of success){state.prices[x.ticker]=Number(x.eurPrice);state.priceCurrencies[x.ticker]='EUR';}
+  if(success.length){
+   state.marketQuotes.stocks={at:new Date().toISOString(),checkedOn:day,category:cat,provider:'Twelve Data',items:success.map(x=>({ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange}))};
+   save();render();
+  }
+  const msg=document.getElementById('market-status');
+  if(msg)msg.textContent=success.length+' cotação(ões) atualizada(s).'+(errors.length?' Sem atualização: '+errors.map(x=>x.ticker+' ('+x.error+')').join('; '):'');
+ }catch(e){const msg=document.getElementById('market-status');if(msg)msg.textContent='Não foi possível atualizar: '+e.message+'. Valores anteriores mantidos.'}
+ finally{marketBusy=false}
+}
+
 function currencyNotice(){const all=[...new Set([...state.operations.map(currencyOf),...Object.values(state.priceCurrencies||{})].filter(x=>x!=='EUR'))];if(!all.length)return '';
 return `<div class="muted-note" id="fx-status">Câmbio diário: ${all.map(c=>{const r=state.fxRates?.[c];return `${esc(c)} ${r?`1 ${esc(c)} = ${money(r.eurPerUnit)} (${esc(r.date||'sem data')}${r.checkedOn!==new Date().toISOString().slice(0,10)?', atualização pendente':''})`:'sem taxa disponível'}`}).join(' · ')}. O câmbio altera a avaliação atual, não o custo histórico das compras. <button id="refresh-fx" type="button">Atualizar câmbios</button></div>`}
 
@@ -347,7 +404,7 @@ function assets(cat){
  // As compras e vendas históricas têm outros significados contabilísticos. Não somar avaliações de vendas.
 
  const errorRows=book.errors.length?`<div class="notice">${esc(book.errors.join(' | '))}. Estas operações não foram incluídas nos cálculos; corrige ou elimina as linhas inválidas.</div>`:'';
- return `<h2>${esc(cat)}</h2>${operationForm(cat)}${cat==='Criptomoedas'?cryptoPanel():''}<div class="cards" style="margin-top:17px">${card('Posições abertas',p.length)}${card('Capital investido',money(cost))}${card('Valor atual bruto',money(current))}${card('Valor atual líquido',money(net))}${card('Ganho não realizado bruto',money(current-cost),sign(current-cost))}${card('Ganho não realizado líquido',money(net-cost),sign(net-cost))}</div>${errorRows}
+ return `<h2>${esc(cat)}</h2>${operationForm(cat)}${cat==='Criptomoedas'?cryptoPanel():marketPanel(cat)}<div class="cards" style="margin-top:17px">${card('Posições abertas',p.length)}${card('Capital investido',money(cost))}${card('Valor atual bruto',money(current))}${card('Valor atual líquido',money(net))}${card('Ganho não realizado bruto',money(current-cost),sign(current-cost))}${card('Ganho não realizado líquido',money(net-cost),sign(net-cost))}</div>${errorRows}
  <section class="panel"><h3>Resumo das posições por ativo</h3><div class="muted-note">Clica numa posição para filtrar o histórico do ativo. Os preços e comissões são tratados em EUR. O ganho líquido considera apenas as posições abertas.</div>${table(['Ativo','Corretora','Quantidade','Preço médio (€)','Capital investido','Último preço (€)','Valor atual bruto','Valor atual líquido','Ganho bruto','Ganho líquido','Rentabilidade',''],positionsRows)}</section>
  <section class="panel"><h3>Histórico detalhado de operações ${selectedAsset?`— ${esc(selectedAsset.ticker)} ${cat==='Criptomoedas'?'':`(${esc(selectedAsset.broker)})`}`:''}</h3>${selectedAsset?'<button id="clearasset" class="primary" style="margin-bottom:12px">Mostrar todas as operações</button>':''}<div class="muted-note">O valor da operação corresponde à transação na data, convertido para EUR pelo câmbio histórico registado. O valor atual e os ganhos numa linha de compra referem-se às unidades ainda em carteira; vendas não são valorizadas novamente. As comissões são em EUR. Para operações antigas, a moeda assumida é EUR.</div>${currencyNotice()}
  <div class="cards" style="margin-top:12px">${card('Compras incluindo comissões',money(buys))}${card('Custo de posições vendidas',money(soldCost))}${card('Capital em carteira',money(openCost))}${card('Valor atual em carteira',money(openCurrent))}</div>
@@ -385,7 +442,22 @@ async function importFile(){let f=document.getElementById('upload').files[0];if(
  }
  alert(added+' operações importadas. '+(incoming.length-added)+' duplicados ignorados.');
 }else throw Error('Apenas .json ou .csv');save();render()}catch(e){alert('Erro: '+e.message)}}
-function bind(){const cryptoRefresh=document.getElementById('update-crypto');if(cryptoRefresh)cryptoRefresh.onclick=()=>updateCrypto(true);const auto=document.getElementById('auto-crypto');if(auto)auto.onchange=e=>{state.autoCryptoQuotes=e.target.checked;save();render();if(state.autoCryptoQuotes)updateCrypto(false)};let refresh=document.getElementById('refresh-fx');if(refresh)refresh.onclick=()=>refreshFx(true);let cur=document.getElementById('opcurrency');if(cur)cur.onchange=()=>{let fx=document.getElementById('opfx');if(fx){fx.value=cur.value==='EUR'?'1':state.fxRates?.[cur.value]?.eurPerUnit||'';fx.readOnly=cur.value==='EUR';}};for(const row of document.querySelectorAll('[data-asset]')){let select=()=>{let a=JSON.parse(decodeURIComponent(row.dataset.asset));selectedAsset=selectedAsset?.ticker===a.ticker&&(tab==='Criptomoedas'||selectedAsset?.broker===a.broker)?null:a;render()};row.addEventListener('click',e=>{if(e.target.closest('button'))return;select()});row.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select()}})}let clear=document.getElementById('clearasset');if(clear)clear.onclick=()=>{selectedAsset=null;render()};const form=(id,fn)=>{let f=document.getElementById(id);if(f)f.onsubmit=e=>{e.preventDefault();try{fn(Object.fromEntries(new FormData(f)));save();render()}catch(err){alert(err.message)}}};form('opform',o=>{let qty=num(o.qty),price=num(o.price),fees=num(o.fees);if(qty<=0||price<0||fees<0||!Number.isFinite(Number(o.fxAtTrade))||Number(o.fxAtTrade)<=0)throw Error('Valores inválidos');if(o.currency==='EUR')o.fxAtTrade=1;let ticker=o.ticker.trim().toUpperCase();if(o.side==='Venda'){let available=positions(tab).filter(x=>x.ticker===ticker&&x.broker===o.broker).reduce((s,x)=>s+x.qty,0);if(qty>available+1e-8)throw Error('Venda superior à quantidade disponível')}const fresh={...o,category:tab,ticker,qty,price,fees,id:uid(),last:(quoteInfo(ticker,num(state.prices?.[ticker])).value||0),total:qty*price};state.operations.push(fresh);if(ledger(tab).errors.length){state.operations.pop();throw Error('Operação incompatível com as quantidades existentes na respetiva data. Verifica a ordem cronológica e as vendas anteriores.')}});form('divform',o=>state.dividends.push({...o,year:num(o.year),amount:num(o.amount)}));form('saveform',o=>state.savings.push({...o,invested:num(o.invested),current:num(o.current)}));form('pprform',o=>state.ppr.push({...o,invested:num(o.invested),current:num(o.current)}));form('caform',o=>{let units=Number(o.units),unitPrice=Number(o.unitPrice),current=Number(o.current);if(!Number.isFinite(units)||units<=0||!Number.isFinite(unitPrice)||unitPrice<0||!Number.isFinite(current)||current<0)throw Error('Valores inválidos');state.certificates.push({id:uid(),date:o.date,units,unitPrice,invested:units*unitPrice,current,source:'Manual'})});form('snapform',o=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(o.date))throw Error('Data inválida');let val=Number(o.amount);if(!Number.isFinite(val)||val<0)throw Error('Saldo inválido');let original=state.history.find(h=>h.date===o.date&&!h.manual);if(original&&!confirm('Já existe um registo histórico para este dia. Substituir o saldo desta categoria?'))return;let h=state.history.find(h=>h.date===o.date&&h.manual);if(!h){h={date:o.date,manual:true};state.history.push(h)}h[o.cat]=val});
+function bind(){
+ const marketButton=document.getElementById('market-refresh');if(marketButton)marketButton.onclick=()=>updateMarketQuotes(tab,true);
+ const marketAuto=document.getElementById('market-auto');if(marketAuto)marketAuto.onchange=e=>{state.autoMarketQuotes=e.target.checked;save();render();if(state.autoMarketQuotes)updateMarketQuotes(tab,false)};
+ for(const b of document.querySelectorAll('[data-market-map]'))b.onclick=()=>{
+  const a=JSON.parse(decodeURIComponent(b.dataset.marketMap)),old=state.marketMappings[a.cat+'|'+a.ticker]||{};
+  const symbol=prompt('Símbolo exato no Twelve Data para '+a.ticker+' (ex.: AAPL ou VWCE):',old.symbol||'');
+  if(symbol===null)return;const normalized=symbol.trim().toUpperCase();
+  if(normalized&&!/^[A-Z0-9_.:\\/-]{1,35}$/.test(normalized))return alert('Símbolo inválido');
+  if(!normalized){delete state.marketMappings[a.cat+'|'+a.ticker];save();render();return}
+  const exchange=prompt('Bolsa do ativo (ex.: NASDAQ ou XETR). Deixa vazio somente se o símbolo for inequívoco:',old.exchange||'');
+  if(exchange===null)return;
+  if(exchange.trim()&&!/^[a-zA-Z0-9 _.-]{1,40}$/.test(exchange.trim()))return alert('Bolsa inválida');
+  state.marketMappings[a.cat+'|'+a.ticker]={symbol:normalized,exchange:exchange.trim()};
+  save();render();
+ };
+ const cryptoRefresh=document.getElementById('update-crypto');if(cryptoRefresh)cryptoRefresh.onclick=()=>updateCrypto(true);const auto=document.getElementById('auto-crypto');if(auto)auto.onchange=e=>{state.autoCryptoQuotes=e.target.checked;save();render();if(state.autoCryptoQuotes)updateCrypto(false)};let refresh=document.getElementById('refresh-fx');if(refresh)refresh.onclick=()=>refreshFx(true);let cur=document.getElementById('opcurrency');if(cur)cur.onchange=()=>{let fx=document.getElementById('opfx');if(fx){fx.value=cur.value==='EUR'?'1':state.fxRates?.[cur.value]?.eurPerUnit||'';fx.readOnly=cur.value==='EUR';}};for(const row of document.querySelectorAll('[data-asset]')){let select=()=>{let a=JSON.parse(decodeURIComponent(row.dataset.asset));selectedAsset=selectedAsset?.ticker===a.ticker&&(tab==='Criptomoedas'||selectedAsset?.broker===a.broker)?null:a;render()};row.addEventListener('click',e=>{if(e.target.closest('button'))return;select()});row.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select()}})}let clear=document.getElementById('clearasset');if(clear)clear.onclick=()=>{selectedAsset=null;render()};const form=(id,fn)=>{let f=document.getElementById(id);if(f)f.onsubmit=e=>{e.preventDefault();try{fn(Object.fromEntries(new FormData(f)));save();render()}catch(err){alert(err.message)}}};form('opform',o=>{let qty=num(o.qty),price=num(o.price),fees=num(o.fees);if(qty<=0||price<0||fees<0||!Number.isFinite(Number(o.fxAtTrade))||Number(o.fxAtTrade)<=0)throw Error('Valores inválidos');if(o.currency==='EUR')o.fxAtTrade=1;let ticker=o.ticker.trim().toUpperCase();if(o.side==='Venda'){let available=positions(tab).filter(x=>x.ticker===ticker&&x.broker===o.broker).reduce((s,x)=>s+x.qty,0);if(qty>available+1e-8)throw Error('Venda superior à quantidade disponível')}const fresh={...o,category:tab,ticker,qty,price,fees,id:uid(),last:(quoteInfo(ticker,num(state.prices?.[ticker])).value||0),total:qty*price};state.operations.push(fresh);if(ledger(tab).errors.length){state.operations.pop();throw Error('Operação incompatível com as quantidades existentes na respetiva data. Verifica a ordem cronológica e as vendas anteriores.')}});form('divform',o=>state.dividends.push({...o,year:num(o.year),amount:num(o.amount)}));form('saveform',o=>state.savings.push({...o,invested:num(o.invested),current:num(o.current)}));form('pprform',o=>state.ppr.push({...o,invested:num(o.invested),current:num(o.current)}));form('caform',o=>{let units=Number(o.units),unitPrice=Number(o.unitPrice),current=Number(o.current);if(!Number.isFinite(units)||units<=0||!Number.isFinite(unitPrice)||unitPrice<0||!Number.isFinite(current)||current<0)throw Error('Valores inválidos');state.certificates.push({id:uid(),date:o.date,units,unitPrice,invested:units*unitPrice,current,source:'Manual'})});form('snapform',o=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(o.date))throw Error('Data inválida');let val=Number(o.amount);if(!Number.isFinite(val)||val<0)throw Error('Saldo inválido');let original=state.history.find(h=>h.date===o.date&&!h.manual);if(original&&!confirm('Já existe um registo histórico para este dia. Substituir o saldo desta categoria?'))return;let h=state.history.find(h=>h.date===o.date&&h.manual);if(!h){h={date:o.date,manual:true};state.history.push(h)}h[o.cat]=val});
 form('cashform',o=>{const v=Number(o.cashAmount);if(!Number.isFinite(v)||v<0)throw Error('Numerário inválido');state.cashAmount=v});
 form('caeditform',o=>{const row=state.certificates.find(x=>String(x.id)===String(o.id));if(!row)throw Error('Subscrição inexistente');const units=Number(o.units),unitPrice=Number(o.unitPrice),invested=Number(o.invested),current=Number(o.current);if(!/^\d{4}-\d{2}-\d{2}$/.test(o.date)||![units,unitPrice,invested,current].every(Number.isFinite)||units<=0||unitPrice<0||invested<0||current<0)throw Error('Dados da subscrição inválidos');const totalChanged=Math.abs(invested-num(row.invested))>0.005;const finalTotal=totalChanged?invested:units*unitPrice;row.date=o.date;row.units=units;row.invested=finalTotal;row.unitPrice=totalChanged?finalTotal/units:unitPrice;row.current=current;editingCaId=null;});
 const cancelCa=document.getElementById('cacancel');if(cancelCa)cancelCa.onclick=()=>{editingCaId=null;render()};
@@ -423,7 +495,7 @@ for(let b of document.querySelectorAll('[data-price]'))b.onclick=()=>{
  const currency=c.trim().toUpperCase();const price=Number(v.replace(',','.'));
  if(!supportedCurrencies.includes(currency)||!Number.isFinite(price)||price<0)return alert('Preço ou moeda inválidos');
  state.prices=state.prices||{};state.priceCurrencies=state.priceCurrencies||{};
- state.prices[t]=price;state.priceCurrencies[t]=currency;save();render();refreshFx();updateCrypto(false);
+ state.prices[t]=price;state.priceCurrencies[t]=currency;save();render();refreshFx();updateCrypto(false);if(['ETF','Ações'].includes(tab))updateMarketQuotes(tab,false);
 };
 
 for(let [attr,array] of [['divdel','dividends'],['savdel','savings'],['pprdel','ppr']])for(let b of document.querySelectorAll('[data-'+attr+']'))b.onclick=()=>{if(confirm('Eliminar este registo?')){state[array].splice(Number(b.dataset[attr]),1);save();render()}};
