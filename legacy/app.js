@@ -37,30 +37,55 @@ async function refreshFx(force=false){
  }catch(error){console.warn('Sem atualização cambial:',error);const status=document.getElementById('fx-status');if(status)status.textContent='Câmbio: atualização indisponível. Taxas anteriores identificadas como tal.';}
 }
 
-const cryptoIds={BTC:'bitcoin',ETH:'ethereum',SOL:'solana',ADA:'cardano',XRP:'ripple',DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',LTC:'litecoin',AVAX:'avalanche-2',BNB:'binancecoin',ATOM:'cosmos',XLM:'stellar',UNI:'uniswap',BCH:'bitcoin-cash',TRX:'tron',SHIB:'shiba-inu',AAVE:'aave',NEAR:'near'};
+
+const cryptoIds={
+ BTC:'bitcoin',ETH:'ethereum',SOL:'solana',ADA:'cardano',XRP:'ripple',
+ DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',LTC:'litecoin',
+ AVAX:'avalanche-2',BNB:'binancecoin',ATOM:'cosmos',XLM:'stellar',
+ UNI:'uniswap',BCH:'bitcoin-cash',TRX:'tron',SHIB:'shiba-inu',
+ AAVE:'aave',NEAR:'near',VET:'vechain',SAND:'the-sandbox',
+ MANA:'decentraland',MATIC:'matic-network',CRO:'crypto-com-chain'
+};
+// Normaliza pares como BTC/EUR e ADA/USD sem alterar os tickers originais.
+const cryptoBase=t=>String(t||'').trim().toUpperCase().split(/[\\/:-]/)[0];
+const cryptoTickerSet=()=>[...new Set(state.operations.filter(o=>o.category==='Criptomoedas').map(o=>String(o.ticker||'').trim().toUpperCase()))];
 if(!state.marketQuotes||typeof state.marketQuotes!=='object')state.marketQuotes={};
 if(state.autoCryptoQuotes===undefined)state.autoCryptoQuotes=true;
 let cryptoBusy=false;
-function cryptoPanel(){const m=state.marketQuotes.crypto||{},tickers=[...new Set(state.operations.filter(o=>o.category==='Criptomoedas').map(o=>String(o.ticker||'').trim().toUpperCase()))],missing=tickers.filter(t=>!cryptoIds[t]);return '<section class="panel"><h3>Cotações de criptomoedas</h3><div class="actions"><button type="button" id="update-crypto">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="auto-crypto" style="width:auto" '+(state.autoCryptoQuotes?'checked':'')+'> Atualização diária</label></div><p class="muted-note">CoinGecko · EUR · última atualização: '+esc(m.at?new Date(m.at).toLocaleString('pt-PT'):'nunca')+'. '+(missing.length?'Sem identificação automática: '+esc(missing.join(', '))+'. ':'')+'Preços indicativos; podem existir atrasos.</p><p id="crypto-message" class="muted-note" aria-live="polite"></p></section>'}
+function cryptoPanel(){
+ const m=state.marketQuotes.crypto||{},tickers=cryptoTickerSet(),supported=tickers.filter(t=>cryptoIds[cryptoBase(t)]),missing=tickers.filter(t=>!cryptoIds[cryptoBase(t)]);
+ const last=m.at?new Date(m.at).toLocaleString('pt-PT'):'nunca';
+ return '<section class="panel"><h3>Cotações de criptomoedas</h3><div class="actions"><button type="button" id="update-crypto">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="auto-crypto" style="width:auto" '+(state.autoCryptoQuotes?'checked':'')+'> Atualização diária</label></div><p class="muted-note">Fonte: CoinGecko · valores de mercado em EUR · última atualização: '+esc(last)+'. Ativos reconhecidos: '+supported.length+'/'+tickers.length+'. '+(missing.length?'Sem correspondência automática: '+esc(missing.join(', '))+'. ':'')+'Os preços são indicativos e podem ter atraso. Nos pares USD, o preço de mercado é convertido para EUR; o registo original não é modificado.</p><p id="crypto-message" class="muted-note" aria-live="polite"></p></section>';
+}
 async function updateCrypto(force=false){
  if(cryptoBusy||(!force&&!state.autoCryptoQuotes))return;
  const day=new Date().toISOString().slice(0,10);
  if(!force&&state.marketQuotes.crypto?.checkedOn===day)return;
- const tickers=[...new Set(state.operations.filter(o=>o.category==='Criptomoedas').map(o=>String(o.ticker||'').trim().toUpperCase()))].filter(t=>cryptoIds[t]);
- if(!tickers.length)return;
- cryptoBusy=true;const message=document.getElementById('crypto-message');if(message)message.textContent='A consultar cotações…';
+ const tickers=cryptoTickerSet().filter(t=>cryptoIds[cryptoBase(t)]);
+ if(!tickers.length){const msg=document.getElementById('crypto-message');if(msg)msg.textContent='Não há ativos reconhecidos para atualizar.';return}
+ cryptoBusy=true;const message=document.getElementById('crypto-message');if(message)message.textContent='A consultar preços de '+tickers.length+' ativo(s)…';
  try{
-  const qs=new URLSearchParams({ids:[...new Set(tickers.map(t=>cryptoIds[t]))].join(','),vs_currencies:'eur',include_last_updated_at:'true'});
+  const qs=new URLSearchParams({ids:[...new Set(tickers.map(t=>cryptoIds[cryptoBase(t)]))].join(','),vs_currencies:'eur',include_last_updated_at:'true'});
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),12000);
   let response;try{response=await fetch('https://api.coingecko.com/api/v3/simple/price?'+qs,{cache:'no-store',signal:controller.signal})}finally{clearTimeout(timeout)}
-  if(!response.ok)throw Error('HTTP '+response.status);
-  const data=await response.json(),received=[];
-  for(const ticker of tickers){const price=Number(data[cryptoIds[ticker]]?.eur);if(Number.isFinite(price)&&price>0)received.push({ticker,price});}
-  if(!received.length)throw Error('Nenhum preço válido recebido');
+  if(!response.ok){
+    if(response.status===401||response.status===403)throw Error('API exige autenticação; será necessário configurar uma chave Demo num serviço seguro');
+    if(response.status===429)throw Error('limite de pedidos da API atingido; tenta mais tarde');
+    throw Error('HTTP '+response.status);
+  }
+  const data=await response.json(),received=[],missingPrices=[];
+  for(const ticker of tickers){const item=data[cryptoIds[cryptoBase(ticker)]],price=Number(item?.eur);
+   if(Number.isFinite(price)&&price>0)received.push({ticker,price});
+   else missingPrices.push(ticker);
+  }
+  if(!received.length)throw Error('A API não devolveu preços válidos para estes ativos');
+  // Preços de avaliação atuais por ticker; não mexer nas operações históricas.
   for(const q of received){state.prices[q.ticker]=q.price;state.priceCurrencies[q.ticker]='EUR';}
   state.marketQuotes.crypto={at:new Date().toISOString(),checkedOn:day,provider:'CoinGecko',symbols:received.map(q=>q.ticker)};
-  save();render();const m=document.getElementById('crypto-message');if(m)m.textContent=received.length+' preço(s) atualizados.';
- }catch(e){console.warn('Cotação indisponível',e);const m=document.getElementById('crypto-message');if(m)m.textContent='Atualização indisponível; preços anteriores mantidos ('+e.message+').';}
+  save();render();
+  const m=document.getElementById('crypto-message');
+  if(m)m.textContent=received.length+' preço(s) atualizados.'+(missingPrices.length?' Sem preço: '+missingPrices.join(', ')+'.':'');
+ }catch(e){console.warn('Cotação indisponível',e);const m=document.getElementById('crypto-message');if(m)m.textContent='Atualização não concluída: '+e.message+'. Preços anteriores mantidos.'}
  finally{cryptoBusy=false}
 }
 
