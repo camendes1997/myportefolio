@@ -1,0 +1,1 @@
+const INITIAL={"operations":[],"summary":[],"dividends":[],"savings":[],"ppr":[],"prices":{},"meta":{},"history":[],"certificates":[],"cashAmount":0,"cashflows":[],"fxRates":{},"priceCurrencies":{}};
