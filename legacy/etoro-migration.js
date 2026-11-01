@@ -27,3 +27,17 @@ async function fixEtoroUsd(){
   save();render();alert('Conversão concluída. Confirma os valores no Dashboard e exporta novo backup.');
  }catch(e){alert('Conversão não concluída: '+e.message)}
 }
+
+function showEtoroMigration(){
+ const app=document.getElementById('app');
+ if(!app||tab!=='Ações'||!etoroUsdPending().length||document.getElementById('etoro-usd-panel'))return;
+ const panel=document.createElement('section');panel.className='panel';panel.id='etoro-usd-panel';
+ const heading=document.createElement('h3');heading.textContent='Revisão cambial eToro (USD → EUR)';
+ const description=document.createElement('p');description.className='muted-note';
+ description.textContent=etoroUsdPending().length+' operações antigas eToro ainda estão identificadas como EUR. Exporta primeiro um backup JSON; confirma depois os valores em USD e a conversão histórica.';
+ const button=document.createElement('button');button.type='button';button.textContent='Corrigir operações eToro';button.onclick=fixEtoroUsd;
+ panel.append(heading,description,button);
+ const form=app.querySelector('.panel');if(form)form.insertAdjacentElement('afterend',panel);else app.prepend(panel);
+}
+const appNode=document.getElementById('app');
+if(appNode){new MutationObserver(showEtoroMigration).observe(appNode,{childList:true});showEtoroMigration()}
