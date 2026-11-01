@@ -29,13 +29,22 @@ Deno.serve(async req => {
     const input=await req.json();
     if(!Array.isArray(input?.assets)||input.assets.length<1||input.assets.length>8)return json({error:"Indica entre 1 e 8 ativos"},400);
     const assets:AssetRequest[]=input.assets;
-    if(assets.some(a=>typeof a!=="object"||!a||!allowedCategory.has(a.category)||typeof a.ticker!=="string"||typeof a.symbol!=="string"||
-        !safe(a.ticker,/^[A-Za-z0-9_.:\/-]+$/,35)||!safe(a.symbol,/^[A-Za-z0-9_.:\/-]+$/,35)||
-        (a.exchange!==undefined&&(typeof a.exchange!=="string"||!safe(a.exchange,/^[A-Za-z0-9 _.-]+$/,40)))))
-      return json({error:"Símbolo ou bolsa inválidos"},400);
+    // ticker é um identificador local da carteira; não deve ser confundido com o símbolo do fornecedor.
+    // Cada ativo inválido recebe um erro próprio em vez de bloquear todos os outros.
+    const invalid = (a:AssetRequest):string|null => {
+      if(!a||typeof a!=="object")return "Registo inválido";
+      if(!allowedCategory.has(a.category))return "Categoria inválida";
+      if(typeof a.ticker!=="string"||!a.ticker.trim()||a.ticker.length>100)return "Ticker interno inválido";
+      if(typeof a.symbol!=="string"||!safe(a.symbol,/^[A-Za-z0-9_.:\\/-]+$/,35))return "Símbolo Twelve Data inválido: "+String(a.symbol);
+      if(a.exchange!==undefined&&a.exchange!==""&&(typeof a.exchange!=="string"||!safe(a.exchange,/^[A-Za-z0-9 _.-]+$/,40)))
+        return "Bolsa inválida: "+String(a.exchange);
+      return null;
+    };
     const results=[];
     // Uma solicitação por ticker; cada consulta poderá consumir créditos do fornecedor.
     for(const a of assets){
+      const validationError=invalid(a);
+      if(validationError){results.push({ticker:String(a?.ticker||"?"),category:a?.category,error:validationError});continue}
       try{
         const query=new URLSearchParams({symbol:a.symbol,apikey:apiKey});
         if(a.exchange)query.set("exchange",a.exchange);
