@@ -112,16 +112,16 @@ function marketPanel(cat){
  const configured=assets.filter(t=>state.marketMappings[cat+'|'+t]?.symbol);
  const meta=state.marketQuotes?.[cat]||{};
  const rows=assets.map(t=>{const m=state.marketMappings[cat+'|'+t]||{};
-  return '<tr><td>'+esc(t)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>'});
+  return '<tr><td>'+esc(t)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td>'+esc(m.fallbackSymbol||'—')+'</td><td>'+esc(m.fallbackCurrency||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>'});
  return '<section class="panel"><h3>Cotações de '+esc(cat)+'</h3><div class="actions"><button type="button" id="market-refresh">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="market-auto" style="width:auto" '+(state.autoMarketQuotes?'checked':'')+'> Atualização diária</label></div>'+
- '<div class="muted-note">Fonte: Twelve Data através do Supabase · '+configured.length+'/'+assets.length+' símbolos configurados. Última consulta: '+esc(meta.at?new Date(meta.at).toLocaleString('pt-PT'):'nunca')+'. Confirma a bolsa de cada ativo antes de atualizar. Necessita da Edge Function e da chave de fornecedor no Supabase; a aplicação não expõe a chave.</div>'+
- '<p id="market-status" class="muted-note" aria-live="polite"></p>'+table(['Ativo','Símbolo do fornecedor','Bolsa','Ação'],rows)+'</section>';
+ '<div class="muted-note">Fonte: Twelve Data, com alternativa Alpha Vantage configurável via Supabase · '+configured.length+'/'+assets.length+' símbolos configurados. Última consulta: '+esc(meta.at?new Date(meta.at).toLocaleString('pt-PT'):'nunca')+'. Confirma o símbolo e a bolsa. Para a alternativa Alpha Vantage, indica também o símbolo específico e a moeda exata da cotação. Os dois fornecedores têm limites gratuitos. A chave fica no Supabase.</div>'+
+ '<p id="market-status" class="muted-note" aria-live="polite"></p>'+table(['Ativo','Twelve Data','Bolsa','Alpha Vantage','Moeda Alpha Vantage','Ação'],rows)+'</section>';
 }
 async function updateMarketQuotes(cat,force=false){
  if(marketBusy||!['ETF','Ações'].includes(cat)||(!force&&!state.autoMarketQuotes))return;
  const day=new Date().toISOString().slice(0,10);
  const mappings=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].map(t=>{
-   const m=state.marketMappings[cat+'|'+t];return m?.symbol?{ticker:t,symbol:m.symbol,exchange:m.exchange||undefined,category:cat}:null;
+   const m=state.marketMappings[cat+'|'+t];return m?.symbol?{ticker:t,symbol:m.symbol,exchange:m.exchange||undefined,category:cat,fallbackSymbol:m.fallbackSymbol||undefined,fallbackCurrency:m.fallbackCurrency||undefined}:null;
  }).filter(Boolean);
  if(!mappings.length){const el=document.getElementById('market-status');if(el)el.textContent='Configura primeiro os símbolos dos ativos.';return}
  if(!force&&state.marketQuotes[cat]?.checkedOn===day)return;
@@ -137,11 +137,11 @@ async function updateMarketQuotes(cat,force=false){
   const success=results.filter(x=>Number.isFinite(Number(x.eurPrice))&&Number(x.eurPrice)>0),errors=results.filter(x=>x.error);
   for(const x of success){state.prices[x.ticker]=Number(x.eurPrice);state.priceCurrencies[x.ticker]='EUR';}
   if(success.length){
-   state.marketQuotes[cat]={at:new Date().toISOString(),checkedOn:day,category:cat,provider:'Twelve Data',items:success.map(x=>({ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange}))};
+   state.marketQuotes[cat]={at:new Date().toISOString(),checkedOn:day,category:cat,provider:'Twelve Data / Alpha Vantage',items:success.map(x=>({ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange,provider:x.provider}))};
    save();render();
   }
   const msg=document.getElementById('market-status');
-  if(msg)msg.textContent=success.length+' cotação(ões) atualizada(s).'+(errors.length?' Sem atualização: '+errors.map(x=>x.ticker+' ('+x.error+')').join('; '):'');
+  if(msg)msg.textContent=success.length+' cotação(ões) atualizada(s) ('+success.map(x=>x.provider+': '+x.ticker).join(', ')+').'+(errors.length?' Sem atualização: '+errors.map(x=>x.ticker+' ('+x.error+')').join('; '):'');
  }catch(e){const msg=document.getElementById('market-status');if(msg)msg.textContent='Não foi possível atualizar: '+e.message+'. Valores anteriores mantidos.'}
  finally{marketBusy=false}
 }
@@ -454,7 +454,17 @@ function bind(){
   const exchange=prompt('Bolsa do ativo (ex.: NASDAQ ou XETR). Deixa vazio somente se o símbolo for inequívoco:',old.exchange||'');
   if(exchange===null)return;
   if(exchange.trim()&&!/^[a-zA-Z0-9 _.-]{1,40}$/.test(exchange.trim()))return alert('Bolsa inválida');
-  state.marketMappings[a.cat+'|'+a.ticker]={symbol:normalized,exchange:exchange.trim()};
+  const avSymbol=prompt('Símbolo Alpha Vantage (opcional, ex.: EDP.LIS). Deixa vazio para manter apenas Twelve Data:',old.fallbackSymbol||'');
+  if(avSymbol===null)return;
+  const fallbackSymbol=avSymbol.trim().toUpperCase();
+  if(fallbackSymbol&&!/^[A-Z0-9_.-]{1,35}$/.test(fallbackSymbol))return alert('Símbolo Alpha Vantage inválido');
+  let fallbackCurrency='';
+  if(fallbackSymbol){
+    const answer=prompt('Moeda REAL da cotação Alpha Vantage (EUR, USD, GBP, etc.). Confirma na bolsa e não adivinhes:',old.fallbackCurrency||'');
+    if(answer===null)return;fallbackCurrency=answer.trim().toUpperCase();
+    if(!/^[A-Z]{3}$/.test(fallbackCurrency))return alert('Moeda inválida. A associação não foi guardada.');
+  }
+  state.marketMappings[a.cat+'|'+a.ticker]={symbol:normalized,exchange:exchange.trim(),fallbackSymbol,fallbackCurrency};
   save();render();
  };
  const cryptoRefresh=document.getElementById('update-crypto');if(cryptoRefresh)cryptoRefresh.onclick=()=>updateCrypto(true);const auto=document.getElementById('auto-crypto');if(auto)auto.onchange=e=>{state.autoCryptoQuotes=e.target.checked;save();render();if(state.autoCryptoQuotes)updateCrypto(false)};let refresh=document.getElementById('refresh-fx');if(refresh)refresh.onclick=()=>refreshFx(true);let cur=document.getElementById('opcurrency');if(cur)cur.onchange=()=>{let fx=document.getElementById('opfx');if(fx){fx.value=cur.value==='EUR'?'1':state.fxRates?.[cur.value]?.eurPerUnit||'';fx.readOnly=cur.value==='EUR';}};for(const row of document.querySelectorAll('[data-asset]')){let select=()=>{let a=JSON.parse(decodeURIComponent(row.dataset.asset));selectedAsset=selectedAsset?.ticker===a.ticker&&(tab==='Criptomoedas'||selectedAsset?.broker===a.broker)?null:a;render()};row.addEventListener('click',e=>{if(e.target.closest('button'))return;select()});row.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();select()}})}let clear=document.getElementById('clearasset');if(clear)clear.onclick=()=>{selectedAsset=null;render()};const form=(id,fn)=>{let f=document.getElementById(id);if(f)f.onsubmit=e=>{e.preventDefault();try{fn(Object.fromEntries(new FormData(f)));save();render()}catch(err){alert(err.message)}}};form('opform',o=>{let qty=num(o.qty),price=num(o.price),fees=num(o.fees);if(qty<=0||price<0||fees<0||!Number.isFinite(Number(o.fxAtTrade))||Number(o.fxAtTrade)<=0)throw Error('Valores inválidos');if(o.currency==='EUR')o.fxAtTrade=1;let ticker=o.ticker.trim().toUpperCase();if(o.side==='Venda'){let available=positions(tab).filter(x=>x.ticker===ticker&&x.broker===o.broker).reduce((s,x)=>s+x.qty,0);if(qty>available+1e-8)throw Error('Venda superior à quantidade disponível')}const fresh={...o,category:tab,ticker,qty,price,fees,id:uid(),last:(quoteInfo(ticker,num(state.prices?.[ticker])).value||0),total:qty*price};state.operations.push(fresh);if(ledger(tab).errors.length){state.operations.pop();throw Error('Operação incompatível com as quantidades existentes na respetiva data. Verifica a ordem cronológica e as vendas anteriores.')}});form('divform',o=>state.dividends.push({...o,year:num(o.year),amount:num(o.amount)}));form('saveform',o=>state.savings.push({...o,invested:num(o.invested),current:num(o.current)}));form('pprform',o=>state.ppr.push({...o,invested:num(o.invested),current:num(o.current)}));form('caform',o=>{let units=Number(o.units),unitPrice=Number(o.unitPrice),current=Number(o.current);if(!Number.isFinite(units)||units<=0||!Number.isFinite(unitPrice)||unitPrice<0||!Number.isFinite(current)||current<0)throw Error('Valores inválidos');state.certificates.push({id:uid(),date:o.date,units,unitPrice,invested:units*unitPrice,current,source:'Manual'})});form('snapform',o=>{if(!/^\d{4}-\d{2}-\d{2}$/.test(o.date))throw Error('Data inválida');let val=Number(o.amount);if(!Number.isFinite(val)||val<0)throw Error('Saldo inválido');let original=state.history.find(h=>h.date===o.date&&!h.manual);if(original&&!confirm('Já existe um registo histórico para este dia. Substituir o saldo desta categoria?'))return;let h=state.history.find(h=>h.date===o.date&&h.manual);if(!h){h={date:o.date,manual:true};state.history.push(h)}h[o.cat]=val});
