@@ -110,7 +110,7 @@ function fetchMarketQuotes(assets){
 function marketPanel(cat){
  const assets=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].sort();
  const configured=assets.filter(t=>state.marketMappings[cat+'|'+t]?.symbol);
- const meta=state.marketQuotes?.stocks||{};
+ const meta=state.marketQuotes?.[cat]||{};
  const rows=assets.map(t=>{const m=state.marketMappings[cat+'|'+t]||{};
   return '<tr><td>'+esc(t)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>'});
  return '<section class="panel"><h3>Cotações de '+esc(cat)+'</h3><div class="actions"><button type="button" id="market-refresh">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="market-auto" style="width:auto" '+(state.autoMarketQuotes?'checked':'')+'> Atualização diária</label></div>'+
@@ -124,7 +124,7 @@ async function updateMarketQuotes(cat,force=false){
    const m=state.marketMappings[cat+'|'+t];return m?.symbol?{ticker:t,symbol:m.symbol,exchange:m.exchange||undefined,category:cat}:null;
  }).filter(Boolean);
  if(!mappings.length){const el=document.getElementById('market-status');if(el)el.textContent='Configura primeiro os símbolos dos ativos.';return}
- if(!force&&state.marketQuotes.stocks?.checkedOn===day&&state.marketQuotes.stocks?.category===cat)return;
+ if(!force&&state.marketQuotes[cat]?.checkedOn===day)return;
  if(mappings.length>24){const el=document.getElementById('market-status');if(el)el.textContent='Há mais de 24 ativos. Atualiza apenas depois de reduzir a seleção para evitar consumo excessivo de créditos.';return}
  marketBusy=true;
  const el=document.getElementById('market-status');if(el)el.textContent='A consultar cotações…';
@@ -137,7 +137,7 @@ async function updateMarketQuotes(cat,force=false){
   const success=results.filter(x=>Number.isFinite(Number(x.eurPrice))&&Number(x.eurPrice)>0),errors=results.filter(x=>x.error);
   for(const x of success){state.prices[x.ticker]=Number(x.eurPrice);state.priceCurrencies[x.ticker]='EUR';}
   if(success.length){
-   state.marketQuotes.stocks={at:new Date().toISOString(),checkedOn:day,category:cat,provider:'Twelve Data',items:success.map(x=>({ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange}))};
+   state.marketQuotes[cat]={at:new Date().toISOString(),checkedOn:day,category:cat,provider:'Twelve Data',items:success.map(x=>({ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange}))};
    save();render();
   }
   const msg=document.getElementById('market-status');
@@ -151,7 +151,7 @@ return `<div class="muted-note" id="fx-status">Câmbio diário: ${all.map(c=>{co
 
 function table(head,rows){return `<table><thead><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr></thead><tbody>${rows.join('')||`<tr><td colspan="${head.length}" class="muted">Sem registos.</td></tr>`}</tbody></table>`}
 function card(label,value,cls='',sub=''){return `<div class="card"><small>${esc(label)}</small><div class="value ${cls}">${value}</div>${sub?`<small>${sub}</small>`:''}</div>`}
-function nav(){document.getElementById('nav').innerHTML=tabs.map(t=>`<button class="${t===tab?'active':''}" data-tab="${esc(t)}">${esc(t)}</button>`).join('');document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;selectedAsset=null;render()})}
+function nav(){document.getElementById('nav').innerHTML=tabs.map(t=>`<button class="${t===tab?'active':''}" data-tab="${esc(t)}">${esc(t)}</button>`).join('');document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;selectedAsset=null;render();if(['ETF','Ações'].includes(tab))updateMarketQuotes(tab,false)})}
 // Fonte unica: operacoes, certificados, PPR e saldos locais; todos os montantes em EUR.
 function keyFor(o){return [o.category,o.broker,o.ticker].join('|')}
 function taxRate(date,category){let days=(Date.now()-new Date(date+'T00:00:00Z').getTime())/86400000;if(!Number.isFinite(days)||days<0)days=0;if(category==='Criptomoedas')return days<365?.28:0;return days<730?.28:days<1826?.252:days<2922?.224:.196}
