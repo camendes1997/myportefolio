@@ -111,26 +111,45 @@ function marketPanel(cat){
  const assets=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].sort();
  const configured=assets.filter(t=>state.marketMappings[cat+'|'+t]?.symbol);
  const meta=state.marketQuotes?.[cat]||{};
- const rows=assets.map(t=>{const m=state.marketMappings[cat+'|'+t]||{},q=meta.lastStatus?.[t],label=q?.status==='updated'?'Atualizado':q?.status==='cached'?'Em cache':q?.status==='pending'||q?.status==='limited'?'Pendente':q?.status==='daily_limit'?'Limite diário':q?.status==='error'?'Erro':'Por atualizar';
-  return '<tr><td>'+esc(t)+'</td><td>'+esc(label)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td>'+esc(m.fallbackSymbol||'—')+'</td><td>'+esc(m.fallbackCurrency||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>'});
+ const labelOf=q=>{
+   switch(q?.status){
+    case 'updated':return 'Atualizado';
+    case 'cached':return 'Em cache';
+    case 'pending':case 'limited':return 'A aguardar API';
+    case 'daily_limit':return 'Limite diário';
+    case 'unsupported':return 'Sem cobertura';
+    case 'stale':return 'Cotação desatualizada';
+    case 'error':return 'Erro';
+    default:return 'Por atualizar';
+   }
+ };
+ const rows=assets.map(t=>{
+  const m=state.marketMappings[cat+'|'+t]||{},q=meta.lastStatus?.[t],item=(meta.items||[]).find(x=>x.ticker===t);
+  const date=item?.quoteDate?String(item.quoteDate).slice(0,10):'—',provider=item?.provider||'—';
+  const detail=q?.detail||'';
+  return '<tr><td>'+esc(t)+'</td><td title="'+esc(detail)+'">'+esc(labelOf(q))+'</td><td>'+esc(provider)+'</td><td>'+esc(date)+'</td><td>'+esc(m.symbol||'Por configurar')+'</td><td>'+esc(m.exchange||'—')+'</td><td>'+esc(m.fallbackSymbol||'—')+'</td><td>'+esc(m.fallbackCurrency||'—')+'</td><td><button data-market-map="'+encodeURIComponent(JSON.stringify({cat,ticker:t}))+'">Configurar</button></td></tr>';
+ });
+ const detailRows=assets.filter(t=>meta.lastStatus?.[t]?.detail).map(t=>esc(t)+': '+esc(meta.lastStatus[t].detail));
  return '<section class="panel"><h3>Cotações de '+esc(cat)+'</h3><div class="actions"><button type="button" id="market-refresh">Atualizar preços agora</button><label class="pill"><input type="checkbox" id="market-auto" style="width:auto" '+(state.autoMarketQuotes?'checked':'')+'> Atualização diária</label></div>'+
- '<div class="muted-note">Fonte: Twelve Data / Alpha Vantage · cache diária partilhada no Supabase · '+configured.length+'/'+assets.length+' símbolos configurados. Última consulta: '+esc(meta.at?new Date(meta.at).toLocaleString('pt-PT'):'nunca')+'. Confirma o símbolo e a bolsa. Para a alternativa Alpha Vantage, indica também o símbolo específico e a moeda exata da cotação. Os dois fornecedores têm limites gratuitos. A chave fica no Supabase.</div>'+
- '<p id="market-status" class="muted-note" aria-live="polite"></p>'+table(['Ativo','Estado','Twelve Data','Bolsa','Alpha Vantage','Moeda Alpha Vantage','Ação'],rows)+'</section>';
+ '<div class="muted-note">Twelve Data / Alpha Vantage · cache diária partilhada no Supabase · '+configured.length+'/'+assets.length+' símbolos configurados. Última consulta: '+esc(meta.at?new Date(meta.at).toLocaleString('pt-PT'):'nunca')+'. Preços de último fecho podem ter data anterior à consulta. Cotações não disponíveis mantêm o último valor.</div>'+
+ '<p id="market-status" class="muted-note" aria-live="polite">'+(detailRows.length?detailRows.join(' · '):'')+'</p>'+
+ table(['Ativo','Estado','Fonte','Data cotação','Twelve Data','Bolsa','Alpha Vantage','Moeda Alpha Vantage','Ação'],rows)+'</section>';
 }
 const marketRetryTimers={ETF:null,'Ações':null};
-async function updateMarketQuotes(cat,force=false){
+async function updateMarketQuotes(cat,force=false,onlyTickers=null){
  if(marketBusy||!['ETF','Ações'].includes(cat)||(!force&&!state.autoMarketQuotes))return;
  const day=new Date().toISOString().slice(0,10);
- const mappings=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].map(t=>{
+ const all=[...new Set(state.operations.filter(o=>o.category===cat).map(o=>String(o.ticker||'').trim().toUpperCase()))].map(t=>{
   const m=state.marketMappings[cat+'|'+t];
   return m?.symbol?{ticker:t,symbol:m.symbol,exchange:m.exchange||undefined,category:cat,
    fallbackSymbol:m.fallbackSymbol||undefined,fallbackCurrency:m.fallbackCurrency||undefined}:null;
  }).filter(Boolean);
+ const mappings=onlyTickers?all.filter(x=>onlyTickers.includes(x.ticker)):all;
  if(!mappings.length){const el=document.getElementById('market-status');if(el)el.textContent='Configura primeiro os símbolos dos ativos.';return}
- if(!force&&state.marketQuotes[cat]?.checkedOn===day)return;
+ if(!force&&!onlyTickers&&state.marketQuotes[cat]?.checkedOn===day)return;
  if(mappings.length>24){const el=document.getElementById('market-status');if(el)el.textContent='Há mais de 24 ativos configurados. Reduz a seleção ou cria grupos.';return}
  marketBusy=true;
- const info=document.getElementById('market-status');if(info)info.textContent='A verificar preços e cache diária…';
+ const info=document.getElementById('market-status');if(info)info.textContent='A consultar cache e cotações…';
  try{
   const results=[];
   for(let i=0;i<mappings.length;i+=8){
@@ -141,7 +160,7 @@ async function updateMarketQuotes(cat,force=false){
   const good=results.filter(x=>['cached','updated'].includes(x.status)&&Number.isFinite(Number(x.eurPrice))&&Number(x.eurPrice)>0);
   const pending=results.filter(x=>['pending','limited'].includes(x.status));
   const daily=results.filter(x=>x.status==='daily_limit');
-  const failed=results.filter(x=>!['cached','updated','pending','limited','daily_limit'].includes(x.status));
+  const failed=results.filter(x=>['error','stale','unsupported'].includes(x.status)||!x.status);
   const previous=state.marketQuotes[cat]?.items||[];
   const indexed=new Map(previous.map(x=>[x.ticker,x]));
   for(const x of good){
@@ -149,26 +168,30 @@ async function updateMarketQuotes(cat,force=false){
    state.priceCurrencies[x.ticker]='EUR';
    indexed.set(x.ticker,{ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange,provider:x.provider,status:x.status,checkedAt:new Date().toISOString()});
   }
+  const previousStatus=state.marketQuotes[cat]?.lastStatus||{};
   state.marketQuotes[cat]={...state.marketQuotes[cat],at:new Date().toISOString(),category:cat,
    provider:'Twelve Data / Alpha Vantage',items:[...indexed.values()],
-   lastStatus:Object.fromEntries(results.map(x=>[x.ticker,{status:x.status||'error',detail:x.error||'',at:new Date().toISOString()}])),
-   // Não repetir automaticamente enquanto não houver nova sessão/dia; pendentes são tratados em breve.
+   lastStatus:{...previousStatus,...Object.fromEntries(results.map(x=>[x.ticker,{status:x.status||'error',detail:x.error||'',at:new Date().toISOString()}]))},
    checkedOn:pending.length?null:day};
   save();render();
   const msg=document.getElementById('market-status');
-  if(msg)msg.textContent=good.length+' preços confirmados ('+good.filter(x=>x.status==='cached').length+' da cache). '+
-   (pending.length?pending.length+' pendentes por limite temporário. ':'')+
-   (daily.length?daily.length+' com limite diário atingido. ':'')+
+  if(msg)msg.textContent=good.length+' preço(s) confirmados ('+good.filter(x=>x.status==='cached').length+' em cache). '+
+   (pending.length?pending.length+' a aguardar limite temporário. ':'')+
+   (daily.length?daily.length+' com limite diário. ':'')+
    (failed.length?failed.map(x=>x.ticker+': '+x.error).join('; '):'');
   if(marketRetryTimers[cat]){clearTimeout(marketRetryTimers[cat]);marketRetryTimers[cat]=null}
   if(pending.length&&state.autoMarketQuotes){
-    const seconds=Math.max(75,Math.min(300,...pending.map(x=>Math.max(75,Number(x.retryAfter)||75))));
-    marketRetryTimers[cat]=setTimeout(()=>{marketRetryTimers[cat]=null;if(tab===cat)updateMarketQuotes(cat,false)},seconds*1000);
-    if(msg)msg.textContent+=' Nova tentativa automática quando o limite for reposto.';
+   const seconds=Math.min(300,Math.max(75,...pending.map(x=>Number(x.retryAfter)||75)));
+   const symbols=pending.map(x=>x.ticker);
+   marketRetryTimers[cat]=setTimeout(()=>{
+    marketRetryTimers[cat]=null;
+    if(tab===cat)updateMarketQuotes(cat,false,symbols);
+   },seconds*1000);
+   if(msg)msg.textContent+=' Nova tentativa automática apenas dos ativos pendentes.';
   }
  }catch(e){
   const msg=document.getElementById('market-status');
-  if(msg)msg.textContent='Consulta indisponível: '+e.message+'. Os preços anteriores foram preservados.';
+  if(msg)msg.textContent='Consulta indisponível: '+e.message+'. Preços anteriores preservados.';
  }finally{marketBusy=false}
 }
 
