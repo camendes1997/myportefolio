@@ -23,7 +23,7 @@ async function begin(token){auth={...token,expires_at:token.expires_at||(Math.fl
  revision=rows?.[0]?.revision||0;activeData=rows?.[0]?.data||emptyPortfolio();dirty=false;conflict=false;lastSynced=JSON.stringify(activeData);
  localStorage.setItem(scopedKey(user.id),JSON.stringify(activeData));
  $('entry').classList.add('hidden');$('workspace').classList.remove('hidden');$('account').classList.remove('hidden');$('identity').textContent=user.email||'Conta';$('owner').textContent='Carteira privada · '+(user.email||'');
- $('portfolio').src='legacy/index.html?v=9.1.1&uid='+encodeURIComponent(user.id);status('Sincronizado');
+ $('portfolio').src='legacy/index.html?v=9.3.0&uid='+encodeURIComponent(user.id);status('Sincronizado');
 }
 async function push(){if(!auth||saving||!dirty||conflict)return;
  saving=true;status('A sincronizar…');try{
