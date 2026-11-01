@@ -34,7 +34,8 @@ async function twelve(a:Asset,key:string):Promise<Quote>{
  const d=await r.json();
  if(!r.ok||d.status==="error"||d.code)throw Error(String(d.message||"Twelve Data indisponível").slice(0,180));
  const price=Number(d.close),currency=String(d.currency||"").toUpperCase(),symbol=String(d.symbol||"").toUpperCase(),quoteDate=String(d.datetime||"");
- if(!Number.isFinite(price)||price<=0||!/^[A-Z]{3}$/.test(currency)||!dateOk(quoteDate))throw Error("Cotação, moeda ou data inválidas na Twelve Data");
+ if(!Number.isFinite(price)||price<=0||!/^[A-Z]{3}$/.test(currency))throw Error("Cotação ou moeda inválida na Twelve Data");
+ if(!dateOk(quoteDate))throw Error("STALE_QUOTE: Twelve Data devolveu cotação antiga ou sem data ("+quoteDate+")");
  if(symbol&&symbol!==a.symbol.toUpperCase())throw Error("Twelve Data devolveu outro símbolo");
  return {ticker:a.ticker,providerSymbol:a.symbol,category:a.category,exchange:d.exchange||a.exchange||null,currency,originalPrice:price,...await toEur(price,currency),quoteDate,provider:"Twelve Data"};
 }
@@ -46,7 +47,8 @@ async function alpha(a:Asset,key:string):Promise<Quote>{
  const d=await r.json();
  if(d.Note||d.Information||d["Error Message"])throw Error(String(d.Note||d.Information||d["Error Message"]).slice(0,180));
  const qv=d["Global Quote"]||{},symbol=String(qv["01. symbol"]||"").toUpperCase(),price=Number(qv["05. price"]),quoteDate=String(qv["07. latest trading day"]||"");
- if(symbol!==a.fallbackSymbol.toUpperCase()||!Number.isFinite(price)||price<=0||!dateOk(quoteDate))throw Error("Cotação Alpha Vantage inválida ou antiga");
+ if(symbol!==a.fallbackSymbol.toUpperCase()||!Number.isFinite(price)||price<=0)throw Error("Alpha Vantage não devolveu preço válido para o símbolo");
+ if(!dateOk(quoteDate))throw Error("STALE_QUOTE: Alpha Vantage devolveu cotação antiga ou sem data ("+quoteDate+")");
  const currency=a.fallbackCurrency;
  return {ticker:a.ticker,providerSymbol:a.fallbackSymbol,category:a.category,exchange:a.exchange||null,currency,originalPrice:price,...await toEur(price,currency),quoteDate,provider:"Alpha Vantage"};
 }
@@ -81,7 +83,7 @@ Deno.serve(async req=>{
     if(claimError){lastError="Cache ou limites indisponíveis; executa a migração 9.4";lastStatus="error";break}
     if(claim?.status==="cached"){
      const quote=claim.quote as Quote & {unavailable?:boolean;error?:string};
-     if(quote.unavailable){lastError=quote.error||"Sem cobertura no plano";lastStatus="error";continue}
+     if(quote.unavailable){lastError=quote.error||"Sem cobertura no plano";lastStatus="unsupported";continue}
      results.push({...quote,ticker:a.ticker,category:a.category,status:"cached"});completed=true;break;
     }
     if(claim?.status!=="allowed"){
@@ -101,7 +103,7 @@ Deno.serve(async req=>{
      results.push({...quote,status:"updated"});completed=true;break;
     }catch(e){
      lastError=e instanceof Error?e.message:"Cotação indisponível";
-     lastStatus="error";
+     lastStatus=/^STALE_QUOTE:/.test(lastError)?"stale":"error";
      // Falhas definitivas de cobertura/plano são memorizadas durante o dia para não
      // gastar repetidamente créditos a consultar o mesmo ativo noutras contas.
      if(/available starting|upgrade now|grow or venture|paid plan|subscription plan|premium data/i.test(lastError)){
@@ -109,6 +111,7 @@ Deno.serve(async req=>{
          cache_key:cacheKey,provider,quote:{unavailable:true,error:lastError},
          checked_on:utcDate(),checked_at:new Date().toISOString()
        },{onConflict:"cache_key"});
+       lastStatus="unsupported";
        continue;
      }
      // Limites do fornecedor devem ter tratamento temporário; não insistir na mesma chamada.
