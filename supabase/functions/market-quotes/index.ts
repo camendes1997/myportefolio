@@ -80,7 +80,8 @@ Deno.serve(async req=>{
     const {data:claim,error:claimError}=await db.rpc("claim_market_quote",{p_cache_key:cacheKey,p_provider:provider,p_min_limit:limits.minute,p_day_limit:limits.day});
     if(claimError){lastError="Cache ou limites indisponíveis; executa a migração 9.4";lastStatus="error";break}
     if(claim?.status==="cached"){
-     const quote=claim.quote as Quote;
+     const quote=claim.quote as Quote & {unavailable?:boolean;error?:string};
+     if(quote.unavailable){lastError=quote.error||"Sem cobertura no plano";lastStatus="error";continue}
      results.push({...quote,ticker:a.ticker,category:a.category,status:"cached"});completed=true;break;
     }
     if(claim?.status!=="allowed"){
@@ -101,6 +102,15 @@ Deno.serve(async req=>{
     }catch(e){
      lastError=e instanceof Error?e.message:"Cotação indisponível";
      lastStatus="error";
+     // Falhas definitivas de cobertura/plano são memorizadas durante o dia para não
+     // gastar repetidamente créditos a consultar o mesmo ativo noutras contas.
+     if(/available starting|upgrade now|grow or venture|paid plan|subscription plan|premium data/i.test(lastError)){
+       await db.from("market_quote_cache").upsert({
+         cache_key:cacheKey,provider,quote:{unavailable:true,error:lastError},
+         checked_on:utcDate(),checked_at:new Date().toISOString()
+       },{onConflict:"cache_key"});
+       continue;
+     }
      // Limites do fornecedor devem ter tratamento temporário; não insistir na mesma chamada.
      if(/minute|credit|rate limit|too many|quota|limit/i.test(lastError)&&!/plan|tier|upgrade|available starting/i.test(lastError)){
        lastStatus="limited";lastRetry=Math.max(lastRetry,70);break;
