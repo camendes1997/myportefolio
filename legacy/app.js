@@ -43,7 +43,7 @@ const cryptoIds={
  DOGE:'dogecoin',DOT:'polkadot',LINK:'chainlink',LTC:'litecoin',
  AVAX:'avalanche-2',BNB:'binancecoin',ATOM:'cosmos',XLM:'stellar',
  UNI:'uniswap',BCH:'bitcoin-cash',TRX:'tron',SHIB:'shiba-inu',
- AAVE:'aave',NEAR:'near',VET:'vechain',SAND:'the-sandbox',
+ AAVE:'aave',NEAR:'near',ENJ:'enjincoin',VET:'vechain',SAND:'the-sandbox',
  MANA:'decentraland',MATIC:'matic-network',CRO:'crypto-com-chain'
 };
 // Normaliza pares como BTC/EUR e ADA/USD sem alterar os tickers originais.
