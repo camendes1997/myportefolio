@@ -166,7 +166,7 @@ async function updateMarketQuotes(cat,force=false,onlyTickers=null){
   for(const x of good){
    state.prices[x.ticker]=Number(x.eurPrice);
    state.priceCurrencies[x.ticker]='EUR';
-   indexed.set(x.ticker,{ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange,provider:x.provider,status:x.status,checkedAt:new Date().toISOString()});
+   indexed.set(x.ticker,{ticker:x.ticker,quoteDate:x.quoteDate,currency:x.currency,exchange:x.exchange,provider:x.provider,originalPrice:x.originalPrice,eurPrice:x.eurPrice,status:x.status,checkedAt:new Date().toISOString()});
   }
   const previousStatus=state.marketQuotes[cat]?.lastStatus||{};
   state.marketQuotes[cat]={...state.marketQuotes[cat],at:new Date().toISOString(),category:cat,
